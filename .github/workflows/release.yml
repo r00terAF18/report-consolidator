@@ -17,10 +17,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            artifact_name: report-consolidator-linux
-            binary_src: dist/report-consolidator.bin
-            binary_dst: dist/report-consolidator-linux
+          # - os: ubuntu-latest
+          #   artifact_name: report-consolidator-linux
+          #   binary_src: dist/report-consolidator.bin
+          #   binary_dst: dist/report-consolidator-linux
           - os: windows-latest
             artifact_name: report-consolidator-windows.exe
             binary_src: dist/report-consolidator.exe
