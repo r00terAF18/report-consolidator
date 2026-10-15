@@ -9,10 +9,13 @@ def build():
     output_dir.mkdir(exist_ok=True)
 
     cmd = [
+        sys.executable,
+        "-m",
         "nuitka",
         "--onefile",
         "--enable-plugin=pyside6",
         "--remove-output",
+        "--assume-yes-for-downloads",
         f"--output-dir={output_dir}",
         "--output-filename=report-consolidator",
     ]
@@ -25,7 +28,7 @@ def build():
     cmd.append(str(entry_point))
 
     print("Executing Nuitka build command:")
-    print(" ".join(cmd))
+    print(" ".join(str(c) for c in cmd))
     subprocess.run(cmd, check=True)
 
 if __name__ == "__main__":
