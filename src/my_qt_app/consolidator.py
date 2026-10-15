@@ -1,7 +1,7 @@
 import re
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import openpyxl
 from openpyxl.utils import get_column_letter
@@ -41,8 +41,24 @@ def find_target_cell(ws, label_keywords: list[str], max_row: int = 50, col_offse
 
 
 class Consolidator:
-    def __init__(self, folder_path: Path):
+    def __init__(
+        self,
+        folder_path: Path,
+        log_callback: Callable[[str], None] | None = None,
+        status_callback: Callable[[str], None] | None = None,
+    ):
         self.folder_path = folder_path
+        self.log_callback = log_callback
+        self.status_callback = status_callback
+
+    def _log(self, logs: list[str], message: str) -> None:
+        logs.append(message)
+        if self.log_callback:
+            self.log_callback(message)
+
+    def _set_status(self, status: str) -> None:
+        if self.status_callback:
+            self.status_callback(status)
 
     def locate_files(self) -> dict[str, Path | None]:
         files: dict[str, Path | None] = {
@@ -54,11 +70,11 @@ class Consolidator:
             "mud_report": None, # Mud Daily Report
         }
 
-        # Check Excel files
+        # Check Excel files, ignoring temp, backup, or already consolidated files
         for path in self.folder_path.glob("*.xlsx"):
-            if path.name.startswith("~$"):
-                continue
             name_lower = path.name.lower()
+            if path.name.startswith("~$") or "consolidated" in name_lower or path.name.endswith(".bak"):
+                continue
             if "tool poosher" in name_lower or "toolpusher" in name_lower:
                 files["target"] = path
             elif "pob" in name_lower:
@@ -88,16 +104,17 @@ class Consolidator:
         result: dict[str, Any] = {"total": None}
         try:
             wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
-            ws = wb.active
-            for row in ws.iter_rows(values_only=True):
-                for idx, cell in enumerate(row):
-                    if isinstance(cell, str) and any(w in cell.lower() for w in ["total pob", "total person", "total"]):
-                        for val in row[idx + 1:]:
-                            if isinstance(val, (int, float)) and 0 < val < 600:
-                                result["total"] = int(val)
-                                wb.close()
-                                return result
-            wb.close()
+            try:
+                ws = wb.active
+                for row in ws.iter_rows(values_only=True):
+                    for idx, cell in enumerate(row):
+                        if isinstance(cell, str) and any(w in cell.lower() for w in ["total pob", "total person", "total"]):
+                            for val in row[idx + 1:]:
+                                if isinstance(val, (int, float)) and 0 < val < 600:
+                                    result["total"] = int(val)
+                                    return result
+            finally:
+                wb.close()
         except Exception:
             pass
         return result
@@ -113,41 +130,43 @@ class Consolidator:
         if path.suffix.lower() == ".xlsx":
             try:
                 wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
-                for sheet in wb.worksheets:
-                    for row in sheet.iter_rows(values_only=True):
-                        row_vals = [c for c in row if c is not None]
-                        row_str = " ".join(str(c).lower() for c in row_vals)
+                try:
+                    for sheet in wb.worksheets:
+                        for row in sheet.iter_rows(values_only=True):
+                            row_vals = [c for c in row if c is not None]
+                            row_str = " ".join(str(c).lower() for c in row_vals)
 
-                        # Fuel data
-                        if "fuel" in row_str or "diesel" in row_str:
-                            for idx, val in enumerate(row):
-                                if isinstance(val, str):
-                                    if "consumed" in val.lower() or "daily" in val.lower():
-                                        for v in row[idx + 1: idx + 4]:
-                                            if isinstance(v, (int, float)) and v > 0:
-                                                result["fuel_consumed"] = float(v)
-                                                break
-                                    elif "stock" in val.lower() or "remain" in val.lower():
-                                        for v in row[idx + 1: idx + 4]:
-                                            if isinstance(v, (int, float)) and v > 0:
-                                                result["fuel_stock"] = float(v)
-                                                break
+                            # Fuel data
+                            if "fuel" in row_str or "diesel" in row_str:
+                                for idx, val in enumerate(row):
+                                    if isinstance(val, str):
+                                        if "consumed" in val.lower() or "daily" in val.lower():
+                                            for v in row[idx + 1: idx + 4]:
+                                                if isinstance(v, (int, float)) and v > 0:
+                                                    result["fuel_consumed"] = float(v)
+                                                    break
+                                        elif "stock" in val.lower() or "remain" in val.lower():
+                                            for v in row[idx + 1: idx + 4]:
+                                                if isinstance(v, (int, float)) and v > 0:
+                                                    result["fuel_stock"] = float(v)
+                                                    break
 
-                        # Generator / Engine Hours (e.g. Gen 1, Gen 2, Engine #1)
-                        gen_match = re.search(r"(gen(?:erator)?|engine)\s*#?\s*([1-4])", row_str)
-                        if gen_match:
-                            gen_num = gen_match.group(2)
-                            for val in row_vals:
-                                if isinstance(val, (int, float)) and 0 < val < 100000:
-                                    result["gen_hours"][f"gen_{gen_num}"] = float(val)
-                                    break
+                            # Generator / Engine Hours (e.g. Gen 1, Gen 2, Engine #1)
+                            gen_match = re.search(r"(gen(?:erator)?|engine)\s*#?\s*([1-4])", row_str)
+                            if gen_match:
+                                gen_num = gen_match.group(2)
+                                for val in row_vals:
+                                    if isinstance(val, (int, float)) and 0 < val < 100000:
+                                        result["gen_hours"][f"gen_{gen_num}"] = float(val)
+                                        break
 
-                        # Maintenance remarks / operations
-                        if any(k in row_str for k in ["repair", "service", "maintenance", "overhaul", "check", "inspect"]):
-                            for c in row_vals:
-                                if isinstance(c, str) and len(c.strip()) > 15:
-                                    result["remarks"].append(c.strip())
-                wb.close()
+                            # Maintenance remarks / operations
+                            if any(k in row_str for k in ["repair", "service", "maintenance", "overhaul", "check", "inspect"]):
+                                for c in row_vals:
+                                    if isinstance(c, str) and len(c.strip()) > 15:
+                                        result["remarks"].append(c.strip())
+                finally:
+                    wb.close()
             except Exception:
                 pass
 
@@ -173,26 +192,28 @@ class Consolidator:
         if path.suffix.lower() == ".xlsx":
             try:
                 wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
-                for sheet in wb.worksheets:
-                    for row in sheet.iter_rows(values_only=True):
-                        row_vals = [c for c in row if c is not None]
-                        row_str = " ".join(str(c).lower() for c in row_vals)
+                try:
+                    for sheet in wb.worksheets:
+                        for row in sheet.iter_rows(values_only=True):
+                            row_vals = [c for c in row if c is not None]
+                            row_str = " ".join(str(c).lower() for c in row_vals)
 
-                        # Electrical loads (kW or Amps)
-                        gen_match = re.search(r"gen(?:erator)?\s*#?\s*([1-4])", row_str)
-                        if gen_match:
-                            gen_num = gen_match.group(1)
-                            for val in row_vals:
-                                if isinstance(val, (int, float)) and 0 < val < 3000:
-                                    result["gen_loads"][f"gen_{gen_num}"] = float(val)
-                                    break
+                            # Electrical loads (kW or Amps)
+                            gen_match = re.search(r"gen(?:erator)?\s*#?\s*([1-4])", row_str)
+                            if gen_match:
+                                gen_num = gen_match.group(1)
+                                for val in row_vals:
+                                    if isinstance(val, (int, float)) and 0 < val < 3000:
+                                        result["gen_loads"][f"gen_{gen_num}"] = float(val)
+                                        break
 
-                        # Electrical activities
-                        if any(k in row_str for k in ["electrical", "motor", "mcc", "lighting", "sensor", "breaker", "cable"]):
-                            for c in row_vals:
-                                if isinstance(c, str) and len(c.strip()) > 15:
-                                    result["remarks"].append(c.strip())
-                wb.close()
+                            # Electrical activities
+                            if any(k in row_str for k in ["electrical", "motor", "mcc", "lighting", "sensor", "breaker", "cable"]):
+                                for c in row_vals:
+                                    if isinstance(c, str) and len(c.strip()) > 15:
+                                        result["remarks"].append(c.strip())
+                finally:
+                    wb.close()
             except Exception:
                 pass
 
@@ -214,16 +235,17 @@ class Consolidator:
         result: dict[str, Any] = {"depth": None}
         try:
             wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
-            ws = wb.active
-            for row in ws.iter_rows(values_only=True):
-                for idx, cell in enumerate(row):
-                    if isinstance(cell, str) and any(k in cell.lower() for k in ["current depth", "present depth", "hole depth", "depth (m)"]):
-                        for val in row[idx + 1: idx + 5]:
-                            if isinstance(val, (int, float)) and val > 0:
-                                result["depth"] = round(float(val), 2)
-                                wb.close()
-                                return result
-            wb.close()
+            try:
+                ws = wb.active
+                for row in ws.iter_rows(values_only=True):
+                    for idx, cell in enumerate(row):
+                        if isinstance(cell, str) and any(k in cell.lower() for k in ["current depth", "present depth", "hole depth", "depth (m)"]):
+                            for val in row[idx + 1: idx + 5]:
+                                if isinstance(val, (int, float)) and val > 0:
+                                    result["depth"] = round(float(val), 2)
+                                    return result
+            finally:
+                wb.close()
         except Exception:
             pass
         return result
@@ -232,15 +254,20 @@ class Consolidator:
         logs: list[str] = []
 
         if not self.folder_path.is_dir():
-            return False, [f"Error: Path '{self.folder_path}' is not a valid directory."]
+            err_msg = f"Error: Path '{self.folder_path}' is not a valid directory."
+            self._log(logs, err_msg)
+            return False, logs
 
+        self._set_status("Scanning directory...")
         files = self.locate_files()
         target = files["target"]
 
         if not target:
-            return False, [f"Target Error: No Toolpusher DDR (*TOOL POOSHER*.xlsx) found in '{self.folder_path.name}'."]
+            err_msg = f"Target Error: No Toolpusher DDR (*TOOL POOSHER*.xlsx) found in '{self.folder_path.name}'."
+            self._log(logs, err_msg)
+            return False, logs
 
-        logs.append(f"Master target located: {target.name}")
+        self._log(logs, f"Master target located: {target.name}")
 
         # Extract data from available sources
         extracted_data: dict[str, Any] = {}
@@ -253,7 +280,8 @@ class Consolidator:
         ]:
             file_path = files[source_key]
             if file_path:
-                logs.append(f"Reading {source_name}: {file_path.name}")
+                self._set_status(f"Reading {source_name}...")
+                self._log(logs, f"Reading {source_name}: {file_path.name}")
                 if source_key == "pob":
                     extracted_data["pob"] = self.extract_pob(file_path)
                 elif source_key == "mdr":
@@ -263,76 +291,95 @@ class Consolidator:
                 elif source_key == "company_ddr":
                     extracted_data["ddr"] = self.extract_company_ddr(file_path)
             else:
-                logs.append(f"Warning: No {source_name} file found. Skipping.")
+                self._log(logs, f"Warning: No {source_name} file found. Skipping.")
 
         # Safety backup
         backup_path = target.with_suffix(".xlsx.bak")
         try:
             shutil.copy2(target, backup_path)
-            logs.append(f"Safety backup saved: {backup_path.name}")
+            self._log(logs, f"Safety backup saved: {backup_path.name}")
+        except PermissionError as e:
+            err_msg = f"File Error: Backup creation failed - '{backup_path.name}' is locked by another program. ({e})"
+            self._log(logs, err_msg)
+            return False, logs
         except Exception as e:
-            return False, [f"File Error: Could not generate backup file: {e}"]
+            err_msg = f"File Error: Could not generate backup file: {e}"
+            self._log(logs, err_msg)
+            return False, logs
 
         # Write to Toolpusher DDR
+        out_file = target.with_name(f"{target.stem}_CONSOLIDATED.xlsx")
+        self._set_status("Updating consolidated workbook...")
         try:
             wb = openpyxl.load_workbook(target)
-            ws = wb.active
+            try:
+                ws = wb.active
 
-            updated_fields = 0
+                updated_fields = 0
 
-            # 1. POB
-            pob_val = extracted_data.get("pob", {}).get("total")
-            if pob_val is not None:
-                coord = find_target_cell(ws, ["pob", "total pob", "total person"]) or "C10"
-                if write_cell_safe(ws, coord, pob_val):
-                    logs.append(f"Updated POB Total -> {pob_val} (at {coord})")
-                    updated_fields += 1
+                # 1. POB
+                pob_val = extracted_data.get("pob", {}).get("total")
+                if pob_val is not None:
+                    coord = find_target_cell(ws, ["pob", "total pob", "total person"]) or "C10"
+                    if write_cell_safe(ws, coord, pob_val):
+                        self._log(logs, f"Updated POB Total -> {pob_val} (at {coord})")
+                        updated_fields += 1
 
-            # 2. Drilling Depth
-            depth_val = extracted_data.get("ddr", {}).get("depth")
-            if depth_val is not None:
-                coord = find_target_cell(ws, ["current depth", "present depth", "depth"]) or "H5"
-                if write_cell_safe(ws, coord, depth_val):
-                    logs.append(f"Updated Current Depth -> {depth_val} (at {coord})")
-                    updated_fields += 1
+                # 2. Drilling Depth
+                depth_val = extracted_data.get("ddr", {}).get("depth")
+                if depth_val is not None:
+                    coord = find_target_cell(ws, ["current depth", "present depth", "depth"]) or "H5"
+                    if write_cell_safe(ws, coord, depth_val):
+                        self._log(logs, f"Updated Current Depth -> {depth_val} (at {coord})")
+                        updated_fields += 1
 
-            # 3. Mechanical Report Data (Fuel & Generator Hours)
-            mdr_data = extracted_data.get("mdr", {})
-            if mdr_data.get("fuel_consumed") is not None:
-                coord = find_target_cell(ws, ["fuel consumed", "daily fuel", "fuel daily"])
-                if coord and write_cell_safe(ws, coord, mdr_data["fuel_consumed"]):
-                    logs.append(f"Updated Daily Fuel Consumed -> {mdr_data['fuel_consumed']} (at {coord})")
-                    updated_fields += 1
+                # 3. Mechanical Report Data (Fuel & Generator Hours)
+                mdr_data = extracted_data.get("mdr", {})
+                if mdr_data.get("fuel_consumed") is not None:
+                    coord = find_target_cell(ws, ["fuel consumed", "daily fuel", "fuel daily"])
+                    if coord and write_cell_safe(ws, coord, mdr_data["fuel_consumed"]):
+                        self._log(logs, f"Updated Daily Fuel Consumed -> {mdr_data['fuel_consumed']} (at {coord})")
+                        updated_fields += 1
 
-            if mdr_data.get("fuel_stock") is not None:
-                coord = find_target_cell(ws, ["fuel stock", "fuel remaining", "fuel balance"])
-                if coord and write_cell_safe(ws, coord, mdr_data["fuel_stock"]):
-                    logs.append(f"Updated Fuel Remaining -> {mdr_data['fuel_stock']} (at {coord})")
-                    updated_fields += 1
+                if mdr_data.get("fuel_stock") is not None:
+                    coord = find_target_cell(ws, ["fuel stock", "fuel remaining", "fuel balance"])
+                    if coord and write_cell_safe(ws, coord, mdr_data["fuel_stock"]):
+                        self._log(logs, f"Updated Fuel Remaining -> {mdr_data['fuel_stock']} (at {coord})")
+                        updated_fields += 1
 
-            # 4. Remarks (Mechanical & Electrical updates)
-            all_remarks = []
-            if mdr_data.get("remarks"):
-                all_remarks.append("--- MECHANICAL UPDATES ---")
-                all_remarks.extend(mdr_data["remarks"][:5])
-            if extracted_data.get("edr", {}).get("remarks"):
-                all_remarks.append("--- ELECTRICAL UPDATES ---")
-                all_remarks.extend(extracted_data["edr"]["remarks"][:5])
+                # 4. Remarks (Mechanical & Electrical updates)
+                all_remarks = []
+                if mdr_data.get("remarks"):
+                    all_remarks.append("--- MECHANICAL UPDATES ---")
+                    all_remarks.extend(mdr_data["remarks"][:5])
+                if extracted_data.get("edr", {}).get("remarks"):
+                    all_remarks.append("--- ELECTRICAL UPDATES ---")
+                    all_remarks.extend(extracted_data["edr"]["remarks"][:5])
 
-            if all_remarks:
-                combined_text = "\n".join(all_remarks)
-                coord = find_target_cell(ws, ["maintenance", "repair", "remarks", "mechanical/electrical"])
-                if coord:
-                    write_cell_safe(ws, coord, combined_text)
-                    logs.append(f"Updated Maintenance & Electrical Remarks (at {coord})")
-                    updated_fields += 1
+                if all_remarks:
+                    combined_text = "\n".join(all_remarks)
+                    coord = find_target_cell(ws, ["maintenance", "repair", "remarks", "mechanical/electrical"])
+                    if coord:
+                        write_cell_safe(ws, coord, combined_text)
+                        self._log(logs, f"Updated Maintenance & Electrical Remarks (at {coord})")
+                        updated_fields += 1
 
-            out_file = target.with_name(f"{target.stem}_CONSOLIDATED.xlsx")
-            wb.save(out_file)
-            wb.close()
-            logs.append(f"Success: Consolidated report saved as '{out_file.name}' ({updated_fields} fields written).")
-            return True, logs
-        except Exception as e:
-            if "wb" in locals():
+                self._set_status("Saving output workbook...")
+                wb.save(out_file)
+                success_msg = f"Success: Consolidated report saved as '{out_file.name}' ({updated_fields} fields written)."
+                self._log(logs, success_msg)
+                return True, logs
+            finally:
                 wb.close()
-            return False, logs + [f"Execution Error while writing workbook: {e}"]
+
+        except PermissionError as e:
+            err_msg = (
+                f"Permission Denied: File '{out_file.name}' is currently open in Excel or another program. "
+                f"Please close Excel and try again.\nDetails: {e}"
+            )
+            self._log(logs, err_msg)
+            return False, logs
+        except Exception as e:
+            err_msg = f"Execution Error while writing workbook: {e}"
+            self._log(logs, err_msg)
+            return False, logs

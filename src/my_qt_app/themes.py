@@ -40,6 +40,11 @@ QComboBox {
 QComboBox:hover {
     border: 1px solid #05ffa1;
 }
+QComboBox:disabled {
+    background-color: #1f1238;
+    color: #6b5585;
+    border: 1px solid #4a3363;
+}
 QComboBox::drop-down {
     border: none;
     width: 24px;
@@ -53,8 +58,7 @@ QComboBox QAbstractItemView {
     padding: 4px;
 }
 QPushButton {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff71ce, stop:1 #b967ff);
-    color: #120b22;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff71ce, stop:1 #b967ff);\n    color: #120b22;
     border: none;
     border-radius: 6px;
     padding: 8px 18px;
@@ -62,11 +66,24 @@ QPushButton {
     font-size: 13px;
 }
 QPushButton:hover {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #01cdfe, stop:1 #05ffa1);
-    color: #0d0221;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #01cdfe, stop:1 #05ffa1);\n    color: #0d0221;
 }
 QPushButton:pressed {
     background-color: #b967ff;
+}
+QPushButton:disabled {
+    background: #2b194a;
+    color: #6b5585;
+}
+QProgressBar {
+    border: 1px solid #ff71ce;
+    border-radius: 3px;
+    background-color: #120b22;
+    max-height: 6px;
+}
+QProgressBar::chunk {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff71ce, stop:1 #01cdfe);
+    border-radius: 2px;
 }
 QTextEdit {
     background-color: #120b22;
@@ -107,6 +124,14 @@ QLabel#dropZoneActive {
     border-radius: 12px;
     background-color: rgba(5, 255, 161, 0.15);
     color: #05ffa1;
+    font-size: 14px;
+    padding: 24px;
+}
+QLabel#dropZoneDisabled {
+    border: 2px dashed #4a3363;
+    border-radius: 12px;
+    background-color: rgba(30, 18, 50, 0.35);
+    color: #6b5585;
     font-size: 14px;
     padding: 24px;
 }
@@ -151,6 +176,11 @@ QComboBox:hover {
     background-color: rgba(255, 255, 255, 0.14);
     border: 1px solid rgba(130, 185, 255, 0.5);
 }
+QComboBox:disabled {
+    background-color: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.3);
+}
 QComboBox::drop-down {
     border: none;
     width: 20px;
@@ -179,6 +209,21 @@ QPushButton:hover {
 }
 QPushButton:pressed {
     background-color: rgba(255, 255, 255, 0.08);
+}
+QPushButton:disabled {
+    background-color: rgba(255, 255, 255, 0.04);
+    color: rgba(255, 255, 255, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+QProgressBar {
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+    background-color: rgba(15, 22, 34, 0.5);
+    max-height: 6px;
+}
+QProgressBar::chunk {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4388e6, stop:1 #72b2ff);
+    border-radius: 2px;
 }
 QTextEdit {
     background-color: rgba(15, 22, 34, 0.65);
@@ -219,6 +264,14 @@ QLabel#dropZoneActive {
     border-radius: 12px;
     background-color: rgba(114, 178, 255, 0.15);
     color: #ffffff;
+    font-size: 14px;
+    padding: 24px;
+}
+QLabel#dropZoneDisabled {
+    border: 2px dashed rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    background-color: rgba(255, 255, 255, 0.02);
+    color: rgba(209, 226, 247, 0.4);
     font-size: 14px;
     padding: 24px;
 }
@@ -264,6 +317,11 @@ QComboBox {
 QComboBox:hover {
     border: 1px solid #bb86fc;
 }
+QComboBox:disabled {
+    background-color: #181818;
+    border: 1px solid #282828;
+    color: #555555;
+}
 QComboBox::drop-down {
     border: none;
     width: 20px;
@@ -291,6 +349,20 @@ QPushButton:hover {
 }
 QPushButton:pressed {
     background-color: #9955e8;
+}
+QPushButton:disabled {
+    background-color: #2c2533;
+    color: #665c70;
+}
+QProgressBar {
+    border: 1px solid #383838;
+    border-radius: 3px;
+    background-color: #1e1e1e;
+    max-height: 6px;
+}
+QProgressBar::chunk {
+    background-color: #03dac6;
+    border-radius: 2px;
 }
 QTextEdit {
     background-color: #1e1e1e;
@@ -331,6 +403,14 @@ QLabel#dropZoneActive {
     border-radius: 8px;
     background-color: rgba(3, 218, 198, 0.08);
     color: #03dac6;
+    font-size: 14px;
+    padding: 24px;
+}
+QLabel#dropZoneDisabled {
+    border: 2px dashed #282828;
+    border-radius: 8px;
+    background-color: #161616;
+    color: #555555;
     font-size: 14px;
     padding: 24px;
 }
@@ -375,6 +455,11 @@ QComboBox:hover {
     background-color: #323232;
     border: 1px solid #4a4a4a;
 }
+QComboBox:disabled {
+    background-color: #1a1a1a;
+    border: 1px solid #282828;
+    color: #555555;
+}
 QComboBox::drop-down {
     border: none;
     width: 20px;
@@ -404,6 +489,21 @@ QPushButton:hover {
 QPushButton:pressed {
     background-color: #252525;
     color: #8a8a8a;
+}
+QPushButton:disabled {
+    background-color: #1c1c1c;
+    color: #555555;
+    border: 1px solid #282828;
+}
+QProgressBar {
+    border: 1px solid #383838;
+    border-radius: 3px;
+    background-color: #1e1e1e;
+    max-height: 6px;
+}
+QProgressBar::chunk {
+    background-color: #60cdff;
+    border-radius: 2px;
 }
 QTextEdit {
     background-color: #1e1e1e;
@@ -444,6 +544,14 @@ QLabel#dropZoneActive {
     border-radius: 8px;
     background-color: #2b333a;
     color: #60cdff;
+    font-size: 14px;
+    padding: 24px;
+}
+QLabel#dropZoneDisabled {
+    border: 2px dashed #303030;
+    border-radius: 8px;
+    background-color: #1c1c1c;
+    color: #505050;
     font-size: 14px;
     padding: 24px;
 }

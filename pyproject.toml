@@ -1,6 +1,6 @@
 [project]
 name = "report-consolidator"
-version = "0.3.0"
+version = "0.3.1"
 description = "Themed Daily Report Consolidator GUI with PySide6 and Nuitka"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -1,7 +1,8 @@
+import io
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -9,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QProgressBar,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -18,25 +20,50 @@ from PySide6.QtWidgets import (
 from my_qt_app.consolidator import Consolidator
 from my_qt_app.themes import THEMES
 
+# Guard against crashes in windowed builds (e.g. Nuitka --windows-console-mode=disable)
+# where sys.stdout or sys.stderr can be None.
+if sys.stdout is None:
+    sys.stdout = io.StringIO()
+if sys.stderr is None:
+    sys.stderr = io.StringIO()
+
 
 class DropZone(QLabel):
     def __init__(self, on_folder_selected):
         super().__init__()
         self.on_folder_selected = on_folder_selected
+        self.is_busy = False
         self.setObjectName("dropZone")
         self.setAlignment(Qt.AlignCenter)
         self.setText("Drag and drop daily report folder here\nor click 'Browse Folder'")
         self.setAcceptDrops(True)
 
+    def set_busy(self, busy: bool):
+        self.is_busy = busy
+        if busy:
+            self.setObjectName("dropZoneDisabled")
+            self.setText("Processing in background...\nPlease wait.")
+        else:
+            self.setObjectName("dropZone")
+            self.setText("Drag and drop daily report folder here\nor click 'Browse Folder'")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
     def dragEnterEvent(self, event):
+        if self.is_busy:
+            event.ignore()
+            return
+
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
-            if any(Path(u.toLocalFile()).is_dir() for u in urls):
-                self.setObjectName("dropZoneActive")
-                self.style().unpolish(self)
-                self.style().polish(self)
-                event.acceptProposedAction()
-                return
+            for u in urls:
+                local_file = u.toLocalFile()
+                if local_file and Path(local_file).is_dir():
+                    self.setObjectName("dropZoneActive")
+                    self.style().unpolish(self)
+                    self.style().polish(self)
+                    event.acceptProposedAction()
+                    return
         event.ignore()
 
     def dragLeaveEvent(self, event):
@@ -44,23 +71,67 @@ class DropZone(QLabel):
 
     def dropEvent(self, event):
         self.reset_style()
+        if self.is_busy:
+            event.ignore()
+            return
+
+        target_folder: Path | None = None
         for url in event.mimeData().urls():
-            path = Path(url.toLocalFile())
-            if path.is_dir():
-                self.on_folder_selected(path)
-                event.acceptProposedAction()
-                return
+            local_file = url.toLocalFile()
+            if local_file:
+                p = Path(local_file)
+                if p.is_dir():
+                    target_folder = p
+                    break
+
+        if target_folder:
+            event.acceptProposedAction()
+            # Queue processing via singleShot so dropEvent returns immediately.
+            # This prevents OS drag-and-drop timeouts (e.g. OLE RPC on Windows, Wayland freezes).
+            QTimer.singleShot(0, lambda: self.on_folder_selected(target_folder))
+        else:
+            event.ignore()
 
     def reset_style(self):
-        self.setObjectName("dropZone")
+        if self.is_busy:
+            self.setObjectName("dropZoneDisabled")
+        else:
+            self.setObjectName("dropZone")
         self.style().unpolish(self)
         self.style().polish(self)
+
+
+class ConsolidationWorker(QThread):
+    log_signal = Signal(str)
+    status_signal = Signal(str)
+    finished_signal = Signal(bool, list)
+    error_signal = Signal(str)
+
+    def __init__(self, folder_path: Path):
+        super().__init__()
+        self.folder_path = folder_path
+
+    def run(self):
+        try:
+            consolidator = Consolidator(
+                folder_path=self.folder_path,
+                log_callback=self.log_signal.emit,
+                status_callback=self.status_signal.emit,
+            )
+            success, logs = consolidator.run()
+            self.finished_signal.emit(success, logs)
+        except Exception as e:
+            self.error_signal.emit(str(e))
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("DDR Report Consolidator")
-        self.resize(680, 520)
+        self.resize(700, 540)
+
+        self.worker: ConsolidationWorker | None = None
+        self.last_directory: str = str(Path.home())
 
         central_widget = QWidget()
         central_widget.setObjectName("centralWidget")
@@ -100,6 +171,14 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.clear_btn)
         layout.addLayout(btn_layout)
 
+        # Progress Bar (Indeterminate during work)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName("progressBar")
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+
         # Activity Log Output
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
@@ -120,29 +199,75 @@ class MainWindow(QMainWindow):
         self.drop_zone.reset_style()
 
     def clear_logs(self):
+        if self.worker and self.worker.isRunning():
+            return
         self.log_output.clear()
         self.status_label.setText("Ready")
 
+    def set_ui_busy(self, busy: bool):
+        self.browse_btn.setEnabled(not busy)
+        self.clear_btn.setEnabled(not busy)
+        self.theme_combo.setEnabled(not busy)
+        self.drop_zone.set_busy(busy)
+        self.progress_bar.setVisible(busy)
+
     def browse_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Report Directory")
+        if self.worker and self.worker.isRunning():
+            return
+
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select Report Directory",
+            self.last_directory,
+            QFileDialog.ShowDirsOnly,
+        )
         if folder:
-            self.process_folder(Path(folder))
+            self.last_directory = folder
+            # Defer process_folder using singleShot to let the file dialog close cleanly first.
+            # This prevents window manager freeze on Linux and avoids blocking dialog dismissal.
+            target = Path(folder)
+            QTimer.singleShot(0, lambda: self.process_folder(target))
 
     def process_folder(self, folder: Path):
+        if self.worker and self.worker.isRunning():
+            return
+
+        self.set_ui_busy(True)
         self.log_output.clear()
         self.status_label.setText(f"Processing: {folder.name}...")
-        self.log_output.append(f"Processing directory: {folder.resolve()}")
-        consolidator = Consolidator(folder)
-        success, logs = consolidator.run()
-        for line in logs:
-            self.log_output.append(line)
+        self.log_output.append(f"Starting consolidation for: {folder.resolve()}")
+
+        self.worker = ConsolidationWorker(folder)
+        self.worker.log_signal.connect(self.log_output.append)
+        self.worker.status_signal.connect(self.status_label.setText)
+        self.worker.finished_signal.connect(self.on_consolidation_finished)
+        self.worker.error_signal.connect(self.on_consolidation_error)
+        self.worker.start()
+
+    def on_consolidation_finished(self, success: bool, logs: list):
         self.status_label.setText("Finished successfully!" if success else "Consolidation halted with errors.")
+        self.set_ui_busy(False)
+        self.worker = None
+
+    def on_consolidation_error(self, error_message: str):
+        self.log_output.append(f"Fatal error during processing: {error_message}")
+        self.status_label.setText("Consolidation halted with errors.")
+        self.set_ui_busy(False)
+        self.worker = None
+
+    def closeEvent(self, event):
+        if self.worker and self.worker.isRunning():
+            self.worker.terminate()
+            self.worker.wait(1000)
+        event.accept()
+
 
 def main():
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()
