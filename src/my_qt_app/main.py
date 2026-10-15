@@ -1,4 +1,3 @@
-import io
 import sys
 from pathlib import Path
 
@@ -20,12 +19,15 @@ from PySide6.QtWidgets import (
 from my_qt_app.consolidator import Consolidator
 from my_qt_app.themes import THEMES
 
-# Guard against crashes in windowed builds (e.g. Nuitka --windows-console-mode=disable)
-# where sys.stdout or sys.stderr can be None.
+
+class NullWriter:
+    def write(self, text): pass
+    def flush(self): pass
+
 if sys.stdout is None:
-    sys.stdout = io.StringIO()
+    sys.stdout = NullWriter()
 if sys.stderr is None:
-    sys.stderr = io.StringIO()
+    sys.stderr = NullWriter()
 
 
 class DropZone(QLabel):
@@ -86,8 +88,6 @@ class DropZone(QLabel):
 
         if target_folder:
             event.acceptProposedAction()
-            # Queue processing via singleShot so dropEvent returns immediately.
-            # This prevents OS drag-and-drop timeouts (e.g. OLE RPC on Windows, Wayland freezes).
             QTimer.singleShot(0, lambda: self.on_folder_selected(target_folder))
         else:
             event.ignore()
@@ -104,7 +104,7 @@ class DropZone(QLabel):
 class ConsolidationWorker(QThread):
     log_signal = Signal(str)
     status_signal = Signal(str)
-    finished_signal = Signal(bool, list)
+    finished_signal = Signal(bool)
     error_signal = Signal(str)
 
     def __init__(self, folder_path: Path):
@@ -118,8 +118,8 @@ class ConsolidationWorker(QThread):
                 log_callback=self.log_signal.emit,
                 status_callback=self.status_signal.emit,
             )
-            success, logs = consolidator.run()
-            self.finished_signal.emit(success, logs)
+            success, _ = consolidator.run()
+            self.finished_signal.emit(success)
         except Exception as e:
             self.error_signal.emit(str(e))
 
@@ -141,7 +141,6 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(14)
 
-        # Header with Theme Selector
         header_layout = QHBoxLayout()
         title = QLabel("DDR REPORT CONSOLIDATOR")
         title.setObjectName("titleLabel")
@@ -156,11 +155,9 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self.theme_combo)
         layout.addLayout(header_layout)
 
-        # Drop Zone
         self.drop_zone = DropZone(self.process_folder)
         layout.addWidget(self.drop_zone)
 
-        # Action Buttons
         btn_layout = QHBoxLayout()
         self.browse_btn = QPushButton("Browse Folder...")
         self.browse_btn.clicked.connect(self.browse_folder)
@@ -171,7 +168,6 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.clear_btn)
         layout.addLayout(btn_layout)
 
-        # Progress Bar (Indeterminate during work)
         self.progress_bar = QProgressBar()
         self.progress_bar.setObjectName("progressBar")
         self.progress_bar.setTextVisible(False)
@@ -179,18 +175,15 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
 
-        # Activity Log Output
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setPlaceholderText("System ready. Drag a folder or browse to start consolidation...")
         layout.addWidget(self.log_output)
 
-        # Status Label
         self.status_label = QLabel("Ready")
         self.status_label.setObjectName("statusLabel")
         layout.addWidget(self.status_label)
 
-        # Apply default theme
         self.change_theme("Synthwave")
 
     def change_theme(self, theme_name: str):
@@ -223,8 +216,6 @@ class MainWindow(QMainWindow):
         )
         if folder:
             self.last_directory = folder
-            # Defer process_folder using singleShot to let the file dialog close cleanly first.
-            # This prevents window manager freeze on Linux and avoids blocking dialog dismissal.
             target = Path(folder)
             QTimer.singleShot(0, lambda: self.process_folder(target))
 
@@ -244,7 +235,7 @@ class MainWindow(QMainWindow):
         self.worker.error_signal.connect(self.on_consolidation_error)
         self.worker.start()
 
-    def on_consolidation_finished(self, success: bool, logs: list):
+    def on_consolidation_finished(self, success: bool):
         self.status_label.setText("Finished successfully!" if success else "Consolidation halted with errors.")
         self.set_ui_busy(False)
         self.worker = None

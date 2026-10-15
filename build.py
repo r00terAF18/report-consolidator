@@ -14,6 +14,8 @@ def build():
         "nuitka",
         "--onefile",
         "--enable-plugin=pyside6",
+        "--include-package=openpyxl",
+        "--include-package=pypdf",
         "--remove-output",
         "--assume-yes-for-downloads",
         f"--output-dir={output_dir}",

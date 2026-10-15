@@ -1,10 +1,12 @@
 import re
 import shutil
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import openpyxl
 from openpyxl.utils import get_column_letter
+from openpyxl.utils.cell import coordinate_to_tuple
 
 try:
     from pypdf import PdfReader
@@ -16,13 +18,24 @@ except ImportError:
 def write_cell_safe(ws, coord: str, val: Any) -> bool:
     """Safely write to a cell coordinate, resolving merged cells to their top-left anchor."""
     try:
-        cell = ws[coord]
-        if type(cell).__name__ == "MergedCell":
-            for rng in ws.merged_cells.ranges:
-                if coord in rng:
-                    ws.cell(row=rng.min_row, column=rng.min_col, value=val)
-                    return True
-        cell.value = val
+        row, col = coordinate_to_tuple(coord)
+
+        # Check if the coordinate falls within any merged range
+        for rng in ws.merged_cells.ranges:
+            if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
+                anchor = ws.cell(row=rng.min_row, column=rng.min_col)
+
+                # If the anchor is corrupted and acting as a MergedCell, reset the range
+                if type(anchor).__name__ == "MergedCell":
+                    ws.unmerge_cells(str(rng))
+                    ws.cell(row=rng.min_row, column=rng.min_col).value = val
+                    ws.merge_cells(str(rng))
+                else:
+                    anchor.value = val
+                return True
+
+        # Normal unmerged cell
+        ws[coord].value = val
         return True
     except Exception:
         return False
@@ -65,12 +78,11 @@ class Consolidator:
             "target": None,
             "company_ddr": None,
             "pob": None,
-            "mdr": None,        # Mechanical Daily Report
-            "edr": None,        # Electrical Daily Report (.xlsx or .pdf)
-            "mud_report": None, # Mud Daily Report
+            "mdr": None,
+            "edr": None,
+            "mud_report": None,
         }
 
-        # Check Excel files, ignoring temp, backup, or already consolidated files
         for path in self.folder_path.glob("*.xlsx"):
             name_lower = path.name.lower()
             if path.name.startswith("~$") or "consolidated" in name_lower or path.name.endswith(".bak"):
@@ -88,7 +100,6 @@ class Consolidator:
             elif "ddr" in name_lower:
                 files["company_ddr"] = path
 
-        # Check PDF files if EDR / Mud Report were not in Excel
         for path in self.folder_path.glob("*.pdf"):
             name_lower = path.name.lower()
             if not files["edr"] and "edr" in name_lower:
@@ -120,7 +131,6 @@ class Consolidator:
         return result
 
     def extract_mechanical_report(self, path: Path) -> dict[str, Any]:
-        """Extract Generator hours, fuel, and mechanical operations from MDR."""
         result: dict[str, Any] = {
             "gen_hours": {},
             "fuel_stock": None,
@@ -136,7 +146,6 @@ class Consolidator:
                             row_vals = [c for c in row if c is not None]
                             row_str = " ".join(str(c).lower() for c in row_vals)
 
-                            # Fuel data
                             if "fuel" in row_str or "diesel" in row_str:
                                 for idx, val in enumerate(row):
                                     if isinstance(val, str):
@@ -151,7 +160,6 @@ class Consolidator:
                                                     result["fuel_stock"] = float(v)
                                                     break
 
-                            # Generator / Engine Hours (e.g. Gen 1, Gen 2, Engine #1)
                             gen_match = re.search(r"(gen(?:erator)?|engine)\s*#?\s*([1-4])", row_str)
                             if gen_match:
                                 gen_num = gen_match.group(2)
@@ -160,7 +168,6 @@ class Consolidator:
                                         result["gen_hours"][f"gen_{gen_num}"] = float(val)
                                         break
 
-                            # Maintenance remarks / operations
                             if any(k in row_str for k in ["repair", "service", "maintenance", "overhaul", "check", "inspect"]):
                                 for c in row_vals:
                                     if isinstance(c, str) and len(c.strip()) > 15:
@@ -172,8 +179,9 @@ class Consolidator:
 
         elif path.suffix.lower() == ".pdf" and HAS_PYPDF:
             try:
-                reader = PdfReader(str(path))
-                text = "\n".join(page.extract_text() or "" for page in reader.pages)
+                with open(path, "rb") as f:
+                    reader = PdfReader(f)
+                    text = "\n".join(page.extract_text() or "" for page in reader.pages)
                 for line in text.splitlines():
                     if any(k in line.lower() for k in ["repair", "service", "maintenance", "inspection"]):
                         result["remarks"].append(line.strip())
@@ -183,7 +191,6 @@ class Consolidator:
         return result
 
     def extract_electrical_report(self, path: Path) -> dict[str, Any]:
-        """Extract Electrical equipment status, load, and remarks from EDR."""
         result: dict[str, Any] = {
             "gen_loads": {},
             "remarks": [],
@@ -198,7 +205,6 @@ class Consolidator:
                             row_vals = [c for c in row if c is not None]
                             row_str = " ".join(str(c).lower() for c in row_vals)
 
-                            # Electrical loads (kW or Amps)
                             gen_match = re.search(r"gen(?:erator)?\s*#?\s*([1-4])", row_str)
                             if gen_match:
                                 gen_num = gen_match.group(1)
@@ -207,7 +213,6 @@ class Consolidator:
                                         result["gen_loads"][f"gen_{gen_num}"] = float(val)
                                         break
 
-                            # Electrical activities
                             if any(k in row_str for k in ["electrical", "motor", "mcc", "lighting", "sensor", "breaker", "cable"]):
                                 for c in row_vals:
                                     if isinstance(c, str) and len(c.strip()) > 15:
@@ -219,8 +224,9 @@ class Consolidator:
 
         elif path.suffix.lower() == ".pdf" and HAS_PYPDF:
             try:
-                reader = PdfReader(str(path))
-                text = "\n".join(page.extract_text() or "" for page in reader.pages)
+                with open(path, "rb") as f:
+                    reader = PdfReader(f)
+                    text = "\n".join(page.extract_text() or "" for page in reader.pages)
                 for line in text.splitlines():
                     line_clean = line.strip()
                     if any(k in line_clean.lower() for k in ["mcc", "generator", "motor", "lighting", "repaired", "checked", "troubleshoot"]):
@@ -269,7 +275,6 @@ class Consolidator:
 
         self._log(logs, f"Master target located: {target.name}")
 
-        # Extract data from available sources
         extracted_data: dict[str, Any] = {}
 
         for source_key, source_name in [
@@ -293,7 +298,6 @@ class Consolidator:
             else:
                 self._log(logs, f"Warning: No {source_name} file found. Skipping.")
 
-        # Safety backup
         backup_path = target.with_suffix(".xlsx.bak")
         try:
             shutil.copy2(target, backup_path)
@@ -307,17 +311,15 @@ class Consolidator:
             self._log(logs, err_msg)
             return False, logs
 
-        # Write to Toolpusher DDR
         out_file = target.with_name(f"{target.stem}_CONSOLIDATED.xlsx")
         self._set_status("Updating consolidated workbook...")
+
         try:
             wb = openpyxl.load_workbook(target)
             try:
                 ws = wb.active
-
                 updated_fields = 0
 
-                # 1. POB
                 pob_val = extracted_data.get("pob", {}).get("total")
                 if pob_val is not None:
                     coord = find_target_cell(ws, ["pob", "total pob", "total person"]) or "C10"
@@ -325,7 +327,6 @@ class Consolidator:
                         self._log(logs, f"Updated POB Total -> {pob_val} (at {coord})")
                         updated_fields += 1
 
-                # 2. Drilling Depth
                 depth_val = extracted_data.get("ddr", {}).get("depth")
                 if depth_val is not None:
                     coord = find_target_cell(ws, ["current depth", "present depth", "depth"]) or "H5"
@@ -333,7 +334,6 @@ class Consolidator:
                         self._log(logs, f"Updated Current Depth -> {depth_val} (at {coord})")
                         updated_fields += 1
 
-                # 3. Mechanical Report Data (Fuel & Generator Hours)
                 mdr_data = extracted_data.get("mdr", {})
                 if mdr_data.get("fuel_consumed") is not None:
                     coord = find_target_cell(ws, ["fuel consumed", "daily fuel", "fuel daily"])
@@ -347,7 +347,6 @@ class Consolidator:
                         self._log(logs, f"Updated Fuel Remaining -> {mdr_data['fuel_stock']} (at {coord})")
                         updated_fields += 1
 
-                # 4. Remarks (Mechanical & Electrical updates)
                 all_remarks = []
                 if mdr_data.get("remarks"):
                     all_remarks.append("--- MECHANICAL UPDATES ---")
