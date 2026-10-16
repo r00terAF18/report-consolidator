@@ -1,7 +1,8 @@
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -37,7 +38,7 @@ class DropZone(QLabel):
         self.is_busy = False
         self.setObjectName("dropZone")
         self.setAlignment(Qt.AlignCenter)
-        self.setText("Drag and drop daily report folder here\nor click 'Browse Folder'")
+        self.setText("Drop a daily report folder or month folder here\nor click 'Browse Folder'")
         self.setAcceptDrops(True)
 
     def set_busy(self, busy: bool):
@@ -47,7 +48,7 @@ class DropZone(QLabel):
             self.setText("Processing in background...\nPlease wait.")
         else:
             self.setObjectName("dropZone")
-            self.setText("Drag and drop daily report folder here\nor click 'Browse Folder'")
+            self.setText("Drop a daily report folder or month folder here\nor click 'Browse Folder'")
         self.style().unpolish(self)
         self.style().polish(self)
 
@@ -106,6 +107,7 @@ class ConsolidationWorker(QThread):
     status_signal = Signal(str)
     finished_signal = Signal(bool)
     error_signal = Signal(str)
+    output_signal = Signal(str)
 
     def __init__(self, folder_path: Path):
         super().__init__()
@@ -119,6 +121,8 @@ class ConsolidationWorker(QThread):
                 status_callback=self.status_signal.emit,
             )
             success, _ = consolidator.run()
+            for output in consolidator.outputs:
+                self.output_signal.emit(str(output.resolve()))
             self.finished_signal.emit(success)
         except Exception as e:
             self.error_signal.emit(str(e))
@@ -131,7 +135,9 @@ class MainWindow(QMainWindow):
         self.resize(700, 540)
 
         self.worker: ConsolidationWorker | None = None
+        self.close_when_finished = False
         self.last_directory: str = str(Path.home())
+        self.output_path: str | None = None
 
         central_widget = QWidget()
         central_widget.setObjectName("centralWidget")
@@ -158,6 +164,15 @@ class MainWindow(QMainWindow):
         self.drop_zone = DropZone(self.process_folder)
         layout.addWidget(self.drop_zone)
 
+        instructions = QLabel(
+            "Select a folder containing the Tool Pusher DDR and source reports.\n"
+            "A month folder processes each daily subfolder. Originals are preserved;\n"
+            "new files end in _CONSOLIDATED.xlsx; full source details are saved separately.\n"
+            "Review warnings before issuing."
+        )
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
         btn_layout = QHBoxLayout()
         self.browse_btn = QPushButton("Browse Folder...")
         self.browse_btn.clicked.connect(self.browse_folder)
@@ -166,6 +181,10 @@ class MainWindow(QMainWindow):
         self.clear_btn = QPushButton("Clear Logs")
         self.clear_btn.clicked.connect(self.clear_logs)
         btn_layout.addWidget(self.clear_btn)
+        self.open_btn = QPushButton('Open Saved DDR')
+        self.open_btn.setEnabled(False)
+        self.open_btn.clicked.connect(self.open_output)
+        btn_layout.addWidget(self.open_btn)
         layout.addLayout(btn_layout)
 
         self.progress_bar = QProgressBar()
@@ -176,6 +195,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.progress_bar)
 
         self.log_output = QTextEdit()
+        self.log_output.setAcceptRichText(False)
         self.log_output.setReadOnly(True)
         self.log_output.setPlaceholderText("System ready. Drag a folder or browse to start consolidation...")
         layout.addWidget(self.log_output)
@@ -224,6 +244,8 @@ class MainWindow(QMainWindow):
             return
 
         self.set_ui_busy(True)
+        self.output_path = None
+        self.open_btn.setEnabled(False)
         self.log_output.clear()
         self.status_label.setText(f"Processing: {folder.name}...")
         self.log_output.append(f"Starting consolidation for: {folder.resolve()}")
@@ -233,23 +255,41 @@ class MainWindow(QMainWindow):
         self.worker.status_signal.connect(self.status_label.setText)
         self.worker.finished_signal.connect(self.on_consolidation_finished)
         self.worker.error_signal.connect(self.on_consolidation_error)
+        self.worker.output_signal.connect(self.on_output_saved)
+        self.worker.finished.connect(self.on_worker_stopped)
         self.worker.start()
 
+    def on_output_saved(self, path: str):
+        self.output_path = path
+        self.open_btn.setToolTip(path)
+        self.open_btn.setEnabled(True)
+        self.log_output.append(f'Open Saved DDR: {path}')
+
+    def open_output(self):
+        if self.output_path:
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(self.output_path)):
+                self.log_output.append(f'Could not open the saved DDR: {self.output_path}')
+
     def on_consolidation_finished(self, success: bool):
-        self.status_label.setText("Finished successfully!" if success else "Consolidation halted with errors.")
-        self.set_ui_busy(False)
-        self.worker = None
+        self.status_label.setText("Saved — review warnings in the log." if success else "Some reports could not be saved — see log.")
 
     def on_consolidation_error(self, error_message: str):
         self.log_output.append(f"Fatal error during processing: {error_message}")
         self.status_label.setText("Consolidation halted with errors.")
-        self.set_ui_busy(False)
+
+    def on_worker_stopped(self):
+        self.worker.deleteLater()
         self.worker = None
+        self.set_ui_busy(False)
+        if self.close_when_finished:
+            self.close()
 
     def closeEvent(self, event):
         if self.worker and self.worker.isRunning():
-            self.worker.terminate()
-            self.worker.wait(1000)
+            self.close_when_finished = True
+            self.status_label.setText("Finishing report writes before closing...")
+            event.ignore()
+            return
         event.accept()
 
 
