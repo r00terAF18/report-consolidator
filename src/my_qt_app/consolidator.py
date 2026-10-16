@@ -145,6 +145,26 @@ class Consolidator:
                 result.update({key: assignments[key][0] for key, _ in headings})
         return result
 
+    def _pdf_line(self, fragments) -> str:
+        """Keep Latin runs left to right inside a Persian report line."""
+        parts, run = [], []
+        def flush():
+            if not run:
+                return
+            if any(re.search(r'[A-Za-z]', text) for _, text in run):
+                run.sort()
+            value = ' '.join(text for _, text in run)
+            parts.append(re.sub(r'\s*\.\s*', '.', value) if re.search(r'[A-Za-z]', value) else value)
+            run.clear()
+        for x, text in sorted(fragments, reverse=True):
+            if re.fullmatch(r'[A-Za-z0-9\s._/#"*()+-]+', text):
+                run.append((x, text))
+            else:
+                flush()
+                parts.append(text)
+        flush()
+        return ' '.join(parts)
+
     def _pdf_remarks(self, path: Path, *, mud: bool = False) -> list[str]:
         remarks = []
         for page in PdfReader(path).pages:
@@ -164,8 +184,7 @@ class Consolidator:
                     rows[round(y)].append((x, text))
             numbered_paragraphs = False
             for y in sorted(rows, reverse=True):
-                # Keep number strings intact while ordering Persian fragments right to left.
-                line = " ".join(t for x, t in sorted(rows[y], reverse=True))
+                line = self._pdf_line(rows[y])
                 line = re.sub(r"^\s*\d+\s*[-_]\s*", "", line).strip()
                 if line and not line.startswith("گزارش واحد"):
                     numbered = re.fullmatch(r"\.\s*(.*?)\s+(\d+)", line)
@@ -252,7 +271,7 @@ class Consolidator:
                 for x, y, value in fragments:
                     if 0 < y < max(header) and x < float(page.mediabox.width) / 2:
                         rows[round(y)].append((x, value))
-                requests.extend(" ".join(t for x, t in sorted(rows[y], reverse=True)) for y in sorted(rows, reverse=True))
+                requests.extend(self._pdf_line(rows[y]) for y in sorted(rows, reverse=True))
         installed = {key: " + ".join(f"{count}*{size}" for size, count in Counter(values).items()) + " API"
                      for key, values in decks.items()}
         date = re.search(r"\d{4}/\d{2}/\d{2}", text)
